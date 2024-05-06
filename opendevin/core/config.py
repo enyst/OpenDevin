@@ -10,7 +10,7 @@ from typing import Any, ClassVar, get_args, get_origin
 import toml
 from dotenv import load_dotenv
 
-from opendevin.core.utils import Singleton
+from opendevin.core.utils import SingletonABCMeta as Singleton
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,27 @@ load_dotenv()
 
 
 @dataclass
-class LLMConfig(metaclass=Singleton):
+class AbstractConfig(metaclass=Singleton):
+    """
+    Abstract class for configuration objects.
+    """
+
+    def defaults_to_dict(self) -> dict:
+        """
+        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
+        """
+        dict = {}
+        for f in fields(self):
+            field_value = getattr(self, f.name)
+            if isinstance(field_value, AbstractConfig):
+                dict[f.name] = field_value.defaults_to_dict()
+            else:
+                dict[f.name] = get_field_info(f)
+        return dict
+
+
+@dataclass
+class LLMConfig(AbstractConfig):
     model: str = 'gpt-3.5-turbo-1106'
     api_key: str | None = None
     base_url: str | None = None
@@ -37,34 +57,28 @@ class LLMConfig(metaclass=Singleton):
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
 
-    def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
-        dict = {}
-        for f in fields(self):
-            dict[f.name] = get_field_info(f)
-        return dict
+
+@dataclass
+class MemoryConfig(AbstractConfig):
+    api_key: str | None = None
+    api_version: str | None = None
+    embedding_model: str = 'local'
+    embedding_base_url: str | None = None
+    embedding_deployment_name: str | None = None
+    num_retries: int = 5
+    retry_min_wait: int = 3
+    retry_max_wait: int = 60
 
 
 @dataclass
-class AgentConfig(metaclass=Singleton):
+class AgentConfig(AbstractConfig):
     name: str = 'CodeActAgent'
     memory_enabled: bool = False
     memory_max_threads: int = 2
 
-    def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
-        dict = {}
-        for f in fields(self):
-            dict[f.name] = get_field_info(f)
-        return dict
-
 
 @dataclass
-class AppConfig(metaclass=Singleton):
+class AppConfig(AbstractConfig):
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     workspace_base: str = os.getcwd()
@@ -94,20 +108,8 @@ class AppConfig(metaclass=Singleton):
         """
         Post-initialization hook, called when the instance is created with only default values.
         """
-        AppConfig.defaults_dict = self.defaults_to_dict()
-
-    def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
-        dict = {}
-        for f in fields(self):
-            field_value = getattr(self, f.name)
-            if isinstance(field_value, (LLMConfig, AgentConfig)):
-                dict[f.name] = field_value.defaults_to_dict()
-            else:
-                dict[f.name] = get_field_info(f)
-        return dict
+        if AppConfig.defaults_dict == {}:
+            AppConfig.defaults_dict = self.defaults_to_dict()
 
 
 def get_field_info(field):
@@ -216,19 +218,22 @@ def load_from_toml(config: AppConfig):
         load_from_env(config, toml_config)
         return
 
-    core_config = toml_config['core']
-
     try:
-        llm_config = config.llm
-        if 'llm' in toml_config:
-            llm_config = LLMConfig(**toml_config['llm'])
+        # read all config classes from the config.toml file
+        for config_class in AbstractConfig.__subclasses__():
+            # sections in toml correspond to each config
+            # e.g. [app] for AppConfig, [llm] for LLMConfig
+            toml_section = config_class.__name__.lower().replace('config', '')
 
-        agent_config = config.agent
-        if 'agent' in toml_config:
-            agent_config = AgentConfig(**toml_config['agent'])
+            if toml_section in toml_config:
+                if hasattr(config, toml_section):
+                    config_class(**toml_config[toml_section])
+                elif toml_section == 'app':
+                    # special case for AppConfig, which is the root config object
+                    AppConfig(**toml_config[toml_section])
 
-        config = AppConfig(llm=llm_config, agent=agent_config, **core_config)
-    except (TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, AttributeError, toml.TomlDecodeError):
+        # could just use Exception here, we don't care why it failed, toml file is optional
         logger.warning(
             'Cannot parse config from toml, toml values have not been applied.',
             exc_info=False,
