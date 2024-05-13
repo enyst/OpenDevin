@@ -1,4 +1,5 @@
-FROM ubuntu:22.04
+FROM python:3.11-slim as base
+
 
 # install basic packages
 RUN apt-get update && apt-get install -y \
@@ -9,10 +10,6 @@ RUN apt-get update && apt-get install -y \
     nano \
     unzip \
     zip \
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-dev \
     build-essential \
     openssh-server \
     sudo \
@@ -23,10 +20,11 @@ RUN apt-get update && apt-get install -y \
     make \
     && rm -rf /var/lib/apt/lists/*
 
+# Setup SSH server
 RUN mkdir -p -m0755 /var/run/sshd
 
-# symlink python3 to python
-RUN ln -s /usr/bin/python3 /usr/bin/python
+# Python3, pip, and python3-venv are already included in the python:3.11-slim image
+# Python and pip commands should already point to the correct version in this image
 
 # install basic dependencies for CodeActAgent
 RUN pip3 install --upgrade pip
